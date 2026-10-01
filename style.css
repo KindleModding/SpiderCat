@@ -1,0 +1,32 @@
+html, body {
+  width: 1264px;
+  height: 1680px;
+  margin: 0;
+  background: #ffffff;
+  color: #000000;
+  font-family: sans-serif;
+  text-align: center;
+  font-size: 40px;
+  box-sizing: border-box;
+}
+
+body {
+  padding: 50px;
+}
+
+h1 {
+  font-size: 60px;
+}
+
+#title {
+  margin-top: 3rem;
+}
+
+#quote {
+  margin: 3rem auto;
+  font-size: 45px;
+}
+
+#author {
+  font-size: 35px;
+}
