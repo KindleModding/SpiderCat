@@ -399,7 +399,7 @@ def _assemble_kf8(frags, out_path, title, asin, author):
            '<dc:language>en</dc:language><dc:identifier id="b">x</dc:identifier>\n'
            '  <meta name="fixed-layout" content="true"/>'
            f'<meta name="original-resolution" content="{RES_W}x{RES_H}"/>\n'
-           '  <meta name="book-type" content="children"/><meta name="orientation-lock" content="portrait"/>\n'
+           '  <meta name="orientation-lock" content="portrait"/>\n'
            + cover_meta +
            ' </metadata>\n'
            ' <manifest>\n'
