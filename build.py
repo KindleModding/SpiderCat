@@ -319,7 +319,8 @@ def _rekey(src, dst, asin, title, author):
     if author:
         new += exth(100, author)
 
-    # Insert at the actual end of the EXTH record list (walk past padding).
+    # Insert `new` at the end of the EXTH record list, replacing the old
+    # padding with fresh 4-byte-aligned padding.
     r0 = bytearray(d[offs[0]:offs[1]])
     ex = r0.find(b"EXTH")
     assert ex >= 0, "no EXTH header in record 0"
@@ -328,14 +329,18 @@ def _rekey(src, dst, asin, title, author):
     q = ex + 12
     for _ in range(nrec):
         q += struct.unpack(">I", r0[q + 4:q + 8])[0]
-    r0[q:q] = new
     # Count the records actually appended to `new` (fixes the nrec+4 off-by-one).
     n_new = 0
     p = 0
     while p + 8 <= len(new):
         p += struct.unpack(">I", new[p + 4:p + 8])[0]
         n_new += 1
-    struct.pack_into(">I", r0, ex + 4, hdr_len + len(new))
+    # Replace [q .. ex+hdr_len] (the old padding) with `new` + fresh padding that
+    # keeps the whole EXTH chunk 4-byte aligned.
+    new_chunk = bytearray(new)
+    new_chunk += b"\x00" * (-((q - ex) + len(new)) % 4)
+    r0[q:ex + hdr_len] = new_chunk
+    struct.pack_into(">I", r0, ex + 4, (q - ex) + len(new_chunk))
     struct.pack_into(">I", r0, ex + 8, nrec + n_new)
 
     # Rebuild the PDB record table (record 0 grew).
